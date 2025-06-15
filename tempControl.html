@@ -1978,34 +1978,8 @@
 
                             // 改进的奖励函数 - 接收水温和目标温度
                             const reward = this.ddpgAgent.calculateReward(nextWaterTemp, episodeTarget, heatingPower, lastWaterTemp, step);
+                            // 收集奖励，但不在每步更新图表
                             rewardTrace.push(reward);
-                            this.log(`📈 [第${episode + 1}轮, 第${step + 1}步] 奖励: ${reward.toFixed(2)}`);
-
-                            if (this.trainCurveChart.data.datasets.length < 3) {
-                                this.trainCurveChart.data.datasets.push({
-                                    label: '每步奖励',
-                                    data: rewardTrace,
-                                    borderColor: '#E91E63',
-                                    backgroundColor: 'rgba(233, 30, 99, 0.1)',
-                                    fill: false,
-                                    tension: 0.1,
-                                    yAxisID: 'reward',
-                                    borderWidth: 1,
-                                    pointRadius: 0
-                                });
-                            } else {
-                                this.trainCurveChart.data.datasets[2].data = rewardTrace;
-                            }
-                            if (!this.trainCurveChart.options.scales.reward) {
-                                this.trainCurveChart.options.scales.reward = {
-                                    type: 'linear',
-                                    position: 'right',
-                                    title: { display: true, text: '奖励值' },
-                                    beginAtZero: false,
-                                    grid: { drawOnChartArea: false }
-                                };
-                            }
-                            this.trainCurveChart.update('none');
 
                             // 改进的记忆函数，传入更多温度信息
                             this.ddpgAgent.remember(state, heatingPower, reward, nextState, false, waterTemp, episodeTarget, nextWaterTemp);
@@ -2100,6 +2074,35 @@
                             this.tdLossChart.update('none');
                         }
 
+                        // 回合结束后更新奖励曲线
+                        if (this.trainCurveChart) {
+                            if (this.trainCurveChart.data.datasets.length < 3) {
+                                this.trainCurveChart.data.datasets.push({
+                                    label: '每步奖励',
+                                    data: rewardTrace,
+                                    borderColor: '#E91E63',
+                                    backgroundColor: 'rgba(233, 30, 99, 0.1)',
+                                    fill: false,
+                                    tension: 0.1,
+                                    yAxisID: 'reward',
+                                    borderWidth: 1,
+                                    pointRadius: 0
+                                });
+                            } else {
+                                this.trainCurveChart.data.datasets[2].data = rewardTrace;
+                            }
+                            if (!this.trainCurveChart.options.scales.reward) {
+                                this.trainCurveChart.options.scales.reward = {
+                                    type: 'linear',
+                                    position: 'right',
+                                    title: { display: true, text: '奖励值' },
+                                    beginAtZero: false,
+                                    grid: { drawOnChartArea: false }
+                                };
+                            }
+                            this.trainCurveChart.update('none');
+                        }
+
                         // 检查训练稳定性并可能重置探索
                         const resetExploration = this.ddpgAgent.checkTrainingStability(totalReward);
                         if (resetExploration) {
@@ -2128,19 +2131,17 @@
                             `平均: ${avgReward.toFixed(1)}`
                         );
 
-                        if (episode % 5 === 0 || episode === nEpisodes - 1) {
-                            // 计算温度误差指标
-                            const avgError = tempErrors.reduce((a, b) => a + b, 0) / tempErrors.length;
-                            const maxError = Math.max(...tempErrors);
+                        // 计算温度误差指标
+                        const avgError = tempErrors.reduce((a, b) => a + b, 0) / tempErrors.length;
+                        const maxError = Math.max(...tempErrors);
 
-                            this.log(
-                                `📈 第${episode + 1}轮: 奖励=${totalReward.toFixed(1)}, ` +
-                                `目标温度=${episodeTarget.toFixed(1)}°C, ` +
-                                `噪声=${(this.ddpgAgent.noiseScale * 100).toFixed(1)}%, ` +
-                                `平均误差=${avgError.toFixed(2)}°C, ` +
-                                `到达目标用时=${stepsToTarget !== null ? stepsToTarget : '未达'}步`
-                            );
-                        }
+                        this.log(
+                            `📈 第${episode + 1}轮: 奖励=${totalReward.toFixed(1)}, ` +
+                            `目标温度=${episodeTarget.toFixed(1)}°C, ` +
+                            `噪声=${(this.ddpgAgent.noiseScale * 100).toFixed(1)}%, ` +
+                            `平均误差=${avgError.toFixed(2)}°C, ` +
+                            `到达目标用时=${stepsToTarget !== null ? stepsToTarget : '未达'}步`
+                        );
 
                         // 每 5 轮或最后一轮，快速评估一次升温曲线
                         if (episode % 5 === 0 || episode === nEpisodes - 1) {
