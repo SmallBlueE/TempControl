@@ -1432,7 +1432,6 @@
                     episodeRewards: []
                 };
 
-                this.stepSinceLastDraw = 0;
             }
 
             setupCharts() {
@@ -1544,25 +1543,14 @@
                                 tension: 0.1,
                                 borderWidth: 2,
                                 yAxisID: 'temp'
-                            },
-                            {
-                                label: '奖励',              // ⭐ 新增数据集 2
-                                data: [],
-                                borderColor: '#2196F3',
-                                backgroundColor: 'rgba(33,150,243,0.05)',
-                                fill: true,
-                                tension: 0.2,
-                                borderWidth: 1,
-                                yAxisID: 'reward'
                             }
                         ]
                     },
                     options: {
                         responsive: true,
-                        interaction: { intersect: false, mode: 'index' },
                         plugins: {
                             legend: { position: 'top' },
-                            title: { display: true, text: '每轮训练后水温与奖励响应' }
+                            title: { display: true, text: '每轮训练后水温响应' }
                         },
                         scales: {
                             temp: {                       // 🌡️ 温度主轴（左）
@@ -1570,13 +1558,6 @@
                                 position: 'left',
                                 beginAtZero: false,
                                 title: { display: true, text: '温度 (°C)' }
-                            },
-                            reward: {                     // 💰 奖励副轴（右）
-                                type: 'linear',
-                                position: 'right',
-                                beginAtZero: true,
-                                grid: { drawOnChartArea: false },
-                                title: { display: true, text: '奖励' }
                             },
                             x: {
                                 title: { display: true, text: '时间步' }
@@ -1774,7 +1755,6 @@
                 let lastWaterTemp = waterTemp;
                 let dTdt = 0;
                 let lastPower = 0;
-                const rewardTrace = [];
                 const tempTrace = [];
                 const tempErrors = [];
                 // 目标温度曲线全程用传入的 targetTemp
@@ -1804,8 +1784,7 @@
                     const error = Math.abs(waterTemp - targetTemp);
                     tempErrors.push(error);
 
-                    const reward = agent.calculateReward(waterTemp, targetTemp, power, lastWaterTemp, step);
-                    rewardTrace.push(reward);
+
 
                     if (error < 0.1 && step > 200) break;
                 }
@@ -1815,16 +1794,7 @@
                     // 目标温度轨迹必须全程用传入的 targetTemp
                     this.trainCurveChart.data.datasets[0].data = setTrace.slice(0, tempTrace.length);
                     this.trainCurveChart.data.datasets[1].data = tempTrace;
-                    this.trainCurveChart.data.datasets[2].data = rewardTrace;
-                    
-                    const CHART_UPDATE_INTERVAL = 1000;  // 每 20 步才 redraw
-
-                    this.stepSinceLastDraw++;
-                    if (this.stepSinceLastDraw >= CHART_UPDATE_INTERVAL || step === episodeEnd) {
-                        this.stepSinceLastDraw = 0;
-                        this.trainCurveChart.update('none');
-                        
-                    }
+                    this.trainCurveChart.update('none');
 
                 }
 
@@ -1879,9 +1849,7 @@
                     deltaT: parseFloat(document.getElementById('deltaT').value)
                 };
 
-                const rewardTrace = [];
 
-                this.stepSinceLastDraw = 0;
 
                 // 禁止训练期间使用固定 targetTemp
                 config.targetTemp = null;
@@ -1978,34 +1946,6 @@
 
                             // 改进的奖励函数 - 接收水温和目标温度
                             const reward = this.ddpgAgent.calculateReward(nextWaterTemp, episodeTarget, heatingPower, lastWaterTemp, step);
-                            rewardTrace.push(reward);
-                            this.log(`📈 [第${episode + 1}轮, 第${step + 1}步] 奖励: ${reward.toFixed(2)}`);
-
-                            if (this.trainCurveChart.data.datasets.length < 3) {
-                                this.trainCurveChart.data.datasets.push({
-                                    label: '每步奖励',
-                                    data: rewardTrace,
-                                    borderColor: '#E91E63',
-                                    backgroundColor: 'rgba(233, 30, 99, 0.1)',
-                                    fill: false,
-                                    tension: 0.1,
-                                    yAxisID: 'reward',
-                                    borderWidth: 1,
-                                    pointRadius: 0
-                                });
-                            } else {
-                                this.trainCurveChart.data.datasets[2].data = rewardTrace;
-                            }
-                            if (!this.trainCurveChart.options.scales.reward) {
-                                this.trainCurveChart.options.scales.reward = {
-                                    type: 'linear',
-                                    position: 'right',
-                                    title: { display: true, text: '奖励值' },
-                                    beginAtZero: false,
-                                    grid: { drawOnChartArea: false }
-                                };
-                            }
-                            this.trainCurveChart.update('none');
 
                             // 改进的记忆函数，传入更多温度信息
                             this.ddpgAgent.remember(state, heatingPower, reward, nextState, false, waterTemp, episodeTarget, nextWaterTemp);
