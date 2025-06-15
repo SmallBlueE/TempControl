@@ -1432,7 +1432,6 @@
                     episodeRewards: []
                 };
 
-                this.stepSinceLastDraw = 0;
             }
 
             setupCharts() {
@@ -1817,14 +1816,7 @@
                     this.trainCurveChart.data.datasets[1].data = tempTrace;
                     this.trainCurveChart.data.datasets[2].data = rewardTrace;
                     
-                    const CHART_UPDATE_INTERVAL = 1000;  // 每 20 步才 redraw
-
-                    this.stepSinceLastDraw++;
-                    if (this.stepSinceLastDraw >= CHART_UPDATE_INTERVAL || step === episodeEnd) {
-                        this.stepSinceLastDraw = 0;
-                        this.trainCurveChart.update('none');
-                        
-                    }
+                    this.trainCurveChart.update('none');
 
                 }
 
@@ -1878,10 +1870,6 @@
                     waterMass: parseFloat(document.getElementById('waterMassInput').value),
                     deltaT: parseFloat(document.getElementById('deltaT').value)
                 };
-
-                const rewardTrace = [];
-
-                this.stepSinceLastDraw = 0;
 
                 // 禁止训练期间使用固定 targetTemp
                 config.targetTemp = null;
@@ -1978,8 +1966,6 @@
 
                             // 改进的奖励函数 - 接收水温和目标温度
                             const reward = this.ddpgAgent.calculateReward(nextWaterTemp, episodeTarget, heatingPower, lastWaterTemp, step);
-                            // 收集奖励，但不在每步更新图表
-                            rewardTrace.push(reward);
 
                             // 改进的记忆函数，传入更多温度信息
                             this.ddpgAgent.remember(state, heatingPower, reward, nextState, false, waterTemp, episodeTarget, nextWaterTemp);
@@ -2072,35 +2058,6 @@
                             this.tdLossChart.data.datasets[0].data.push(Math.abs(this.ddpgAgent.actorLoss || 0));
                             this.tdLossChart.data.datasets[1].data.push(this.ddpgAgent.criticLoss || 0);
                             this.tdLossChart.update('none');
-                        }
-
-                        // 回合结束后更新奖励曲线
-                        if (this.trainCurveChart) {
-                            if (this.trainCurveChart.data.datasets.length < 3) {
-                                this.trainCurveChart.data.datasets.push({
-                                    label: '每步奖励',
-                                    data: rewardTrace,
-                                    borderColor: '#E91E63',
-                                    backgroundColor: 'rgba(233, 30, 99, 0.1)',
-                                    fill: false,
-                                    tension: 0.1,
-                                    yAxisID: 'reward',
-                                    borderWidth: 1,
-                                    pointRadius: 0
-                                });
-                            } else {
-                                this.trainCurveChart.data.datasets[2].data = rewardTrace;
-                            }
-                            if (!this.trainCurveChart.options.scales.reward) {
-                                this.trainCurveChart.options.scales.reward = {
-                                    type: 'linear',
-                                    position: 'right',
-                                    title: { display: true, text: '奖励值' },
-                                    beginAtZero: false,
-                                    grid: { drawOnChartArea: false }
-                                };
-                            }
-                            this.trainCurveChart.update('none');
                         }
 
                         // 检查训练稳定性并可能重置探索
