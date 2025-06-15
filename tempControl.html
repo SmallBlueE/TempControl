@@ -1,0 +1,2447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DDPG强化学习控温系统</title>
+    <!-- 2025-06-12 更新: 训练轨迹优化版本 -->
+    <!-- 使用多个CDN备选方案 -->
+    <script>
+        // 动态加载TensorFlow.js
+        function loadScript(src, fallbacks = []) {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = src;
+                script.onload = resolve;
+                script.onerror = () => {
+                    if (fallbacks.length > 0) {
+                        loadScript(fallbacks.shift(), fallbacks).then(resolve).catch(reject);
+                    } else {
+                        reject(new Error(`Failed to load script: ${src}`));
+                    }
+                };
+                document.head.appendChild(script);
+            });
+        }
+
+        // 加载必要的库
+        Promise.all([
+            loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js', [
+                'https://unpkg.com/@tensorflow/tfjs@latest/dist/tf.min.js',
+                'https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.10.0/tf.min.js'
+            ]),
+            loadScript('https://cdn.jsdelivr.net/npm/chart.js', [
+                'https://unpkg.com/chart.js',
+                'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js'
+            ])
+        ]).then(() => {
+            // 强制切换后端并等到 ready 后再初始化
+            tf.setBackend('cpu').then(() => {
+                tf.ready().then(() => {
+                    console.log('已切换到 CPU backend');
+                    window.librariesLoaded = true;
+                    if (window.initializeApp) window.initializeApp();
+                });
+            });
+        }).catch(error => {
+            console.error('库加载失败:', error);
+            document.body.innerHTML = `
+                <div style="padding: 20px; text-align: center; color: red;">
+                    <h2>⚠️ 网络库加载失败</h2>
+                    <p>请检查网络连接或使用离线版本</p>
+                    <p>错误信息: ${error.message}</p>
+                    <button onclick="location.reload()">重新加载</button>
+                </div>
+            `;
+        });
+    </script>
+    <style>
+        /* 保留原有CSS样式 */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
+            border-radius: 10px;
+            color: white;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border: 2px solid #e9ecef;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .control-group label {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #495057;
+            font-size: 14px;
+        }
+
+        .control-group input,
+        .control-group select {
+            padding: 12px;
+            border: 2px solid #dee2e6;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .control-group input:focus,
+        .control-group select:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.25);
+        }
+
+        .buttons {
+            display: flex;
+            gap: 15px;
+            margin: 30px 0;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn:before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            transition: width 0.3s, height 0.3s;
+        }
+
+        .btn:hover:before {
+            width: 300px;
+            height: 300px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(45deg, #007bff, #0056b3);
+            color: white;
+        }
+
+        .btn-danger {
+            background: linear-gradient(45deg, #dc3545, #c82333);
+            color: white;
+        }
+
+        .btn-success {
+            background: linear-gradient(45deg, #28a745, #218838);
+            color: white;
+        }
+
+        .btn-info {
+            background: linear-gradient(45deg, #17a2b8, #138496);
+            color: white;
+        }
+
+        .btn:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .status {
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+            font-weight: 600;
+            background: linear-gradient(45deg, #e9ecef, #f8f9fa);
+            border-left: 5px solid #007bff;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .charts {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 25px;
+            margin: 30px 0;
+        }
+
+        .chart-container {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            border: 1px solid #e9ecef;
+        }
+
+        .chart-container h3 {
+            margin: 0 0 15px 0;
+            color: #495057;
+            text-align: center;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        .log-container {
+            height: 250px;
+            overflow-y: auto;
+            border: 2px solid #dee2e6;
+            padding: 15px;
+            background: #f8f9fa;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            border-radius: 8px;
+            line-height: 1.4;
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 200px;
+            font-size: 18px;
+            color: #6c757d;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #007bff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin-right: 15px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        #stopTest {
+            display: none;
+        }
+
+        .metric-card {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            margin: 10px 0;
+        }
+
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .metric-label {
+            font-size: 12px;
+            opacity: 0.9;
+        }
+
+        /* 新增: 进度指示器样式 */
+        .progress-container {
+            margin: 15px 0;
+            background-color: #f0f0f0;
+            border-radius: 8px;
+            height: 12px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(45deg, #4CAF50, #8BC34A);
+            transition: width 0.5s;
+            position: relative;
+        }
+
+        /* 新增: 训练指标卡片 */
+        .training-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+            margin: 15px 0;
+        }
+
+        .metric-mini-card {
+            background: linear-gradient(45deg, #4b6cb7, #182848);
+            padding: 10px;
+            border-radius: 8px;
+            color: white;
+            text-align: center;
+        }
+
+        .metric-mini-value {
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .metric-mini-label {
+            font-size: 11px;
+            opacity: 0.9;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- 保留原有HTML结构 -->
+    <div class="container">
+        <div class="header">
+            <h1>🤖 DDPG强化学习智能控温系统</h1>
+            <p>基于深度确定性策略梯度的连续控制</p>
+        </div>
+
+        <div id="loadingIndicator" class="loading">
+            <div class="spinner"></div>
+            正在加载系统组件...
+        </div>
+
+        <div id="mainContent" style="display: none;">
+            <!-- 控制参数 -->
+            <div class="controls">
+                <div class="control-group">
+                    <label for="targetWaterTemp">🎯 测试阶段目标水温 (°C)</label>
+                    <input type="number" id="targetWaterTemp" value="45" min="20" max="100" step="0.1">
+                </div>
+                <div class="control-group">
+                    <label for="initWaterTemp">🌡️ 初始水温 (°C)</label>
+                    <input type="number" id="initWaterTemp" value="25" min="10" max="50" step="0.1">
+                </div>
+                <div class="control-group">
+                    <label for="roomTempInput">🏠 环境温度 (°C)</label>
+                    <input type="number" id="roomTempInput" value="22" min="10" max="40" step="0.1">
+                </div>
+                <div class="control-group">
+                    <label for="maxPowerInput">⚡ 最大功率 (W)</label>
+                    <input type="number" id="maxPowerInput" value="3000" min="500" max="5000" step="100">
+                </div>
+                <div class="control-group">
+                    <label for="hAInput">🔄 传热系数</label>
+                    <input type="number" id="hAInput" value="60" min="20" max="100" step="1">
+                </div>
+                <div class="control-group">
+                    <label for="waterMassInput">💧 水质量 (kg)</label>
+                    <input type="number" id="waterMassInput" value="1.0" min="0.1" max="5.0" step="0.1">
+                </div>
+                <div class="control-group">
+                    <label for="epochs">🔄 训练轮数</label>
+                    <input type="number" id="epochs" value="200" min="50" max="1000" step="10">
+                </div>
+                <div class="control-group">
+                    <label for="modelComplexity">🧠 模型复杂度</label>
+                    <select id="modelComplexity">
+                        <option value="1">极简 (1层)</option>
+                        <option value="2">很简 (2层)</option>
+                        <option value="3" selected>简单 (3层)</option>
+                        <option value="4">中等 (4层)</option>
+                        <option value="5">复杂 (5层)</option>
+                        <option value="6">很复杂 (6层)</option>
+                        <option value="7">超复杂 (7层)</option>
+                        <option value="8">极致 (8层)</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="algorithmSelect">🧮 算法</label>
+                    <select id="algorithmSelect">
+                        <option value="ddpg" selected>DDPG</option>
+                        <option value="td3">TD3</option>
+                        <option value="sac">SAC</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label for="simSpeed">⏱️ 仿真速度 (秒)</label>
+                    <input type="number" id="simSpeed" value="0.01" min="0" max="2" step="0.1">
+                </div>
+                <div class="control-group">
+                    <label for="deltaT">🔧 仿真步长 Δt (s)</label>
+                    <input type="number" id="deltaT" value="1" min="1" max="5" step="0.1">
+                </div>
+            </div>
+
+            <!-- 控制按钮 -->
+            <div class="buttons">
+                <button id="startTraining" class="btn btn-primary">🚀 开始训练</button>
+                <button id="stopTraining" class="btn btn-danger">⏹️ 停止训练</button>
+                <button id="testModel" class="btn btn-success">🧪 测试控温</button>
+                <button id="stopTest" class="btn btn-danger">⏹️ 停止测试</button>
+                <button id="saveModel" class="btn btn-info">💾 保存模型</button>
+                <button id="loadModel" class="btn btn-info">📁 加载模型</button>
+            </div>
+
+            <!-- 状态显示 -->
+            <div id="status" class="status">🟢 系统就绪，可以开始训练</div>
+
+            <!-- 训练进度条 (新增) -->
+            <div id="trainingProgress" style="display: none;">
+                <p><strong>训练进度:</strong> <span id="progressText">0%</span></p>
+                <div class="progress-container">
+                    <div class="progress-bar" id="progressBar" style="width: 0%"></div>
+                </div>
+
+                <!-- 训练指标 (新增) -->
+                <div class="training-metrics" id="trainingMetricsPanel">
+                    <div class="metric-mini-card">
+                        <div class="metric-mini-value" id="currentEpisode">--</div>
+                        <div class="metric-mini-label">当前轮次</div>
+                    </div>
+                    <div class="metric-mini-card">
+                        <div class="metric-mini-value" id="avgReward">--</div>
+                        <div class="metric-mini-label">平均奖励</div>
+                    </div>
+                    <div class="metric-mini-card">
+                        <div class="metric-mini-value" id="currentNoise">--</div>
+                        <div class="metric-mini-label">探索噪声</div>
+                    </div>
+                    <div class="metric-mini-card">
+                        <div class="metric-mini-value" id="avgError">--</div>
+                        <div class="metric-mini-label">平均误差(°C)</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 实时指标 -->
+            <div id="metricsPanel" style="display: none;">
+                <div
+                    style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0;">
+                    <div class="metric-card">
+                        <div class="metric-value" id="currentTemp">--</div>
+                        <div class="metric-label">当前温度 (°C)</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="currentError">--</div>
+                        <div class="metric-label">温度误差 (°C)</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="currentPower">--</div>
+                        <div class="metric-label">当前功率 (W)</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="currentReward">--</div>
+                        <div class="metric-label">当前奖励</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 图表显示 -->
+            <div class="charts">
+                <div class="chart-container">
+                    <h3>📈 训练奖励曲线</h3>
+                    <canvas id="lossChart" width="400" height="200"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>📉 Actor/Critic损失曲线</h3>
+                    <canvas id="tdLossChart" width="400" height="200"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>🔥 训练中水温轨迹</h3>
+                    <canvas id="trainCurveChart" width="400" height="200"></canvas>
+                </div>
+                <div class="chart-container full-width">
+                    <h3>🌡️ 控温过程曲线</h3>
+                    <canvas id="testCurveChart" width="800" height="300"></canvas>
+                </div>
+                <!-- 新增图表: 温度误差曲线 -->
+                <div class="chart-container full-width">
+                    <h3>📊 训练过程温度误差变化</h3>
+                    <canvas id="errorChart" width="800" height="300"></canvas>
+                </div>
+            </div>
+
+            <!-- 日志显示 -->
+            <div class="chart-container">
+                <h3>📋 系统日志</h3>
+                <div id="logContainer" class="log-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 等待库加载完成后初始化应用
+        window.initializeApp = function () {
+            document.getElementById('loadingIndicator').style.display = 'none';
+            document.getElementById('mainContent').style.display = 'block';
+
+            // 检查TensorFlow.js是否可用
+            if (typeof tf === 'undefined') {
+                document.getElementById('status').innerHTML = '❌ TensorFlow.js 加载失败';
+                return;
+            }
+            // 检查 TensorFlow.js backend 是否可用
+            if (!tf || !tf.engine().backend) {
+                document.getElementById('status').innerHTML = '❌ TensorFlow.js backend 未就绪，请刷新重试';
+                return;
+            }
+
+            // 检查Chart.js是否可用
+            if (typeof Chart === 'undefined') {
+                document.getElementById('status').innerHTML = '❌ Chart.js 加载失败';
+                return;
+            }
+
+            // 初始化控制器
+            window.controller = new MLController();
+            console.log('🚀 DDPG智能控温系统已启动');
+        };
+
+        // 如果库已经加载完成
+        if (window.librariesLoaded) {
+            window.initializeApp();
+        }
+
+        // =========== 优先经验回放缓冲区 ===============
+        class PrioritizedReplayBuffer {
+            constructor(capacity, alpha = 0.6) {
+                this.capacity = capacity;
+                this.buffer = [];
+                this.priorities = [];
+                this.alpha = alpha;
+                this.beta = 0.4;
+                this.betaIncrement = 0.001;
+                this.maxBeta = 1.0;
+                this.epsilon = 1e-6;
+            }
+
+            add(experience, tdError = 1.0) {
+                const priority = Math.pow(Math.abs(tdError) + this.epsilon, this.alpha);
+
+                if (this.buffer.length < this.capacity) {
+                    this.buffer.push(experience);
+                    this.priorities.push(priority);
+                } else {
+                    const idx = Math.floor(Math.random() * this.capacity);
+                    this.buffer[idx] = experience;
+                    this.priorities[idx] = priority;
+                }
+            }
+
+            sample(batchSize) {
+                const indices = [];
+                const experiences = [];
+                const weights = [];
+
+                if (this.buffer.length === 0) {
+                    return { indices: [], experiences: [], weights: [] };
+                }
+
+                const totalPriority = this.priorities.reduce((sum, p) => sum + p, 0);
+
+                // 保护: 确保有足够数据可以采样
+                const actualBatchSize = Math.min(batchSize, this.buffer.length);
+
+                for (let i = 0; i < actualBatchSize; i++) {
+                    const rand = Math.random() * totalPriority;
+                    let cumSum = 0;
+                    let idx = 0;
+
+                    for (let j = 0; j < this.priorities.length; j++) {
+                        cumSum += this.priorities[j];
+                        if (cumSum >= rand) {
+                            idx = j;
+                            break;
+                        }
+                    }
+
+                    indices.push(idx);
+                    experiences.push(this.buffer[idx]);
+
+                    const prob = this.priorities[idx] / totalPriority;
+                    const weight = Math.pow(prob * this.buffer.length, -this.beta);
+                    weights.push(weight);
+                }
+
+                const maxWeight = Math.max(...weights, 0.00001); // 防止除零错误
+                const normalizedWeights = weights.map(w => w / maxWeight);
+
+                this.beta = Math.min(this.maxBeta, this.beta + this.betaIncrement);
+
+                return { indices, experiences, weights: normalizedWeights };
+            }
+
+            updatePriorities(indices, tdErrors) {
+                for (let i = 0; i < indices.length; i++) {
+                    if (indices[i] >= 0 && indices[i] < this.priorities.length) {
+                        const priority = Math.pow(Math.abs(tdErrors[i]) + this.epsilon, this.alpha);
+                        this.priorities[indices[i]] = priority;
+                    }
+                }
+            }
+
+            size() {
+                return this.buffer.length;
+            }
+
+            // 新增: 清除一部分旧经验，保持经验多样性
+            clearOldExperiences(percentage = 0.1) {
+                if (this.buffer.length < 1000) return; // 只在缓冲区较大时执行
+
+                const numToRemove = Math.floor(this.buffer.length * percentage);
+                const indices = [];
+
+                // 生成要移除的随机索引
+                for (let i = 0; i < numToRemove; i++) {
+                    const idx = Math.floor(Math.random() * this.buffer.length);
+                    indices.push(idx);
+                }
+
+                // 对索引排序并从后向前移除
+                indices.sort((a, b) => b - a);
+                for (const idx of indices) {
+                    this.buffer.splice(idx, 1);
+                    this.priorities.splice(idx, 1);
+                }
+            }
+        }
+
+        // =========== Ornstein-Uhlenbeck噪声 ===============
+        class OUNoise {
+            constructor(size, mu = 0, theta = 0.15, sigma = 0.2) {
+                this.size = size;
+                this.mu = mu;
+                this.theta = theta;
+                this.sigma = sigma;
+                this.state = tf.zeros([size]);
+                this.reset();
+            }
+
+            reset() {
+                this.state = tf.zeros([this.size]);
+            }
+
+            sample() {
+                const x = this.state;
+                const dx = tf.add(
+                    tf.mul(this.theta, tf.sub(this.mu, x)),
+                    tf.mul(this.sigma, tf.randomNormal([this.size]))
+                );
+                this.state = tf.add(x, dx);
+                return this.state;
+            }
+        }
+
+        // ============= 修改后的DDPG Agent ==================
+        class DDPGAgent {
+            constructor(config) {
+                this.config = config;
+                this.maxPower = config.maxPower;
+                this.roomTemp = config.roomTemp; // 保存室温供计算相对温度
+
+                // DDPG超参数优化
+                this.gamma = 0.99;          // 稍微降低以减少长期不确定性
+                this.tau = 0.005;           // 降低目标网络更新速率，增加稳定性
+                this.batchSize = 64;       // 增大批次大小
+                this.actorLr = 0.0001;      // 降低学习率
+                this.criticLr = 0.001;      // 保持Critic学习率较高
+
+                // 构建网络
+                this.buildNetworks();
+
+                // 改进经验回放
+                this.replayBuffer = new PrioritizedReplayBuffer(50000, 0.7); // 更大的缓冲区
+
+                // 改进探索策略
+                this.noise = new OUNoise(1, 0, 0.2, 0.6); // μ=0, θ=0.2, σ=0.6
+                this.noiseScale = 1.0;       // 增大初始探索程度
+                this.noiseDecay = 0.9995;    // 降低噪声衰减速率
+                this.minNoiseScale = 0.1;    // 提高最小噪声限制
+
+                // 损失记录
+                this.actorLoss = 0;
+                this.criticLoss = 0;
+
+                // 训练稳定性追踪
+                this.trainingStability = {
+                    recentRewards: [],
+                    bestReward: -Infinity,
+                    noImprovementCount: 0
+                };
+
+                this.noiseAnnealingSteps = 300; // 噪声衰减步数增加
+            }
+
+            buildNetworks() {
+                // 根据用户选择动态设置网络层数
+                let numLayers = 3;
+                const complexitySel = document.getElementById('modelComplexity');
+                if (complexitySel) numLayers = parseInt(complexitySel.value) || 3;
+
+                // 使用更宽的网络层
+                const layers = Array(numLayers).fill(96);
+
+                // 构建Actor网络 - 增加输入维度，包含相对温度
+                this.actor = this.createActor(layers);
+                this.targetActor = this.createActor(layers);
+
+                // 构建Critic网络
+                this.critic = this.createCritic(layers);
+                this.targetCritic = this.createCritic(layers);
+
+                // 初始化目标网络
+                this.updateTargetNetworks(1.0);
+            }
+
+            createActor(layers) {
+                const model = tf.sequential();
+                // 增加输入维度，加入相对温度因子
+                model.add(tf.layers.dense({
+                    inputShape: [4],
+                    units: layers[0],
+                    activation: 'relu',
+                    kernelInitializer: tf.initializers.heNormal()
+                }));
+
+                // 添加批量归一化以提高训练稳定性
+                model.add(tf.layers.batchNormalization());
+
+                for (let i = 1; i < layers.length; i++) {
+                    model.add(tf.layers.dense({
+                        units: layers[i],
+                        activation: 'relu',
+                        kernelInitializer: 'heNormal'
+                    }));
+
+                    if (i < layers.length - 1) {
+                        model.add(tf.layers.batchNormalization());
+                    }
+                }
+
+                model.add(tf.layers.dense({
+                    units: 1,
+                    activation: 'sigmoid',   // 输出直接 0-1
+                    kernelInitializer: tf.initializers.glorotNormal()
+                }));
+
+                model.compile({
+                    loss: tf.losses.meanSquaredError,
+                    optimizer: tf.train.adam(this.actorLr)
+                });
+
+                return model;
+            }
+
+            createCritic(layers) {
+                // 状态输入增加相对温度因子
+                const stateInput = tf.input({ shape: [4] });
+                const actionInput = tf.input({ shape: [1] });
+
+                let stateH = tf.layers.dense({
+                    units: layers[0],
+                    activation: 'relu',
+                    kernelInitializer: 'heNormal'
+                }).apply(stateInput);
+
+                // 添加批量归一化
+                stateH = tf.layers.batchNormalization().apply(stateH);
+
+                for (let i = 1; i < layers.length; i++) {
+                    stateH = tf.layers.dense({
+                        units: layers[i],
+                        activation: 'relu',
+                        kernelInitializer: 'heNormal'
+                    }).apply(stateH);
+
+                    if (i < layers.length - 1) {
+                        stateH = tf.layers.batchNormalization().apply(stateH);
+                    }
+                }
+
+                const concat = tf.layers.concatenate().apply([stateH, actionInput]);
+
+                let qValue = tf.layers.dense({
+                    units: 64,
+                    activation: 'relu',
+                    kernelInitializer: 'heNormal'
+                }).apply(concat);
+
+                qValue = tf.layers.dense({
+                    units: 1,
+                    activation: 'linear',
+                    kernelInitializer: tf.initializers.glorotNormal()
+                }).apply(qValue);
+
+                const model = tf.model({
+                    inputs: [stateInput, actionInput],
+                    outputs: qValue
+                });
+
+                model.compile({
+                    optimizer: tf.train.adam(this.criticLr),
+                    loss: tf.losses.huberLoss // 使用Huber Loss提高稳定性
+                });
+
+                return model;
+            }
+
+            // 改进状态归一化方法
+            normalizeState(state, waterTemp, targetTemp) {
+                // state = [ΔT, lastWaterTemp, P_prev (0-1)]
+                const [dT, lastT, pPrev] = state;
+
+                // 1) ΔT 归一化 (span 5-25 °C)
+                const span = Math.max(5, Math.min(25, targetTemp - this.roomTemp));
+                const n_dT = Math.max(-1, Math.min(1, dT / span));
+
+                // 2) 上一次水温
+                const n_Tprev = Math.max(-1, Math.min(1, (lastT - this.roomTemp) / 100));
+
+                // 3) 上一步功率
+                const n_p = Math.max(0, Math.min(1, pPrev));
+
+                // 4) 绝对水温
+                const n_absT = (waterTemp - this.roomTemp) / 100;
+
+                return [n_dT, n_Tprev, n_p, n_absT];
+            }
+
+            // 修改动作选择方法
+            async selectAction(state, waterTemp, targetTemp, training = true) {
+                const normalizedState = this.normalizeState(state, waterTemp, targetTemp);
+                const stateTensor = tf.tensor2d([normalizedState]);
+
+                let action = this.actor.predict(stateTensor);
+
+                // 增强探索机制
+                if (training && this.noiseScale > this.minNoiseScale) {
+                    const noise = this.noise.sample();
+                    const scaledNoise = tf.mul(noise, this.noiseScale);
+                    action = tf.add(action, scaledNoise);
+
+                    // 增加温度误差较大时的额外探索
+                    const tempError = Math.abs(waterTemp - targetTemp);
+                    if (tempError > 2.0) {
+                        const extraNoise = tf.randomUniform([1], -0.2, 0.2);
+                        action = tf.add(action, extraNoise);
+                    }
+                }
+
+                // 限制在 [0,1]
+                action = tf.clipByValue(action, 0, 1);
+                const actionArray = await action.array();
+                tf.dispose([stateTensor, action]);
+
+                // 额外: 在快接近目标温度时提供更精细的控制
+                const controlValue = actionArray[0][0] * this.maxPower;
+                const tempError = Math.abs(waterTemp - targetTemp);
+                if (!training && tempError < 1.0) {
+                    // 接近目标温度时，使用更精细的控制策略
+                    return this.preciseControlStrategy(controlValue, waterTemp, targetTemp);
+                }
+
+                return controlValue;
+            }
+
+            // 新增: 精细控温策略
+            preciseControlStrategy(initialPower, waterTemp, targetTemp) {
+                const error = waterTemp - targetTemp;
+
+                // 已经在目标温度附近，使用PI控制模式
+                if (Math.abs(error) < 0.3) {
+                    // 简化的PI控制器
+                    const kP = 300; // 比例系数
+                    const power = initialPower - (error * kP);
+                    return Math.max(0, Math.min(this.maxPower, power));
+                }
+
+                // 还在接近过程中，但已经很接近
+                if (error < 0 && error > -1.0) {
+                    // 水温低于目标、但很接近时，降低功率避免过冲
+                    return initialPower * 0.85;
+                }
+
+                return initialPower; // 其他情况使用原始控制策略
+            }
+
+            // 优化奖励函数，使其更具有指导性
+            calculateReward(waterTemp, targetTemp, heatingPower, lastWaterTemp, stepCount) {
+                const error = waterTemp - targetTemp;
+                const prevError = lastWaterTemp - targetTemp;
+
+                // 1. 精确控温状态 - 高奖励
+                if (Math.abs(error) < 0.1) {
+                    return 100;
+                }
+
+                // 2. 基础奖励计算
+                let reward = 0;
+
+                // 温差改进奖励 - 最重要的指导信号
+                const improvement = Math.abs(prevError) - Math.abs(error);
+                reward += improvement * 100; // 强化温差改进的重要性
+
+                // 温差惩罚 - 使用对数比例，对大误差更敏感
+                reward -= Math.log(1 + Math.abs(error)) * 20;
+
+                // 过冲惩罚 - 更严格
+                if (error > 0) {
+                    reward -= Math.pow(error, 2) * 30;
+                }
+
+                // 控温接近目标区域时的额外奖励
+                if (Math.abs(error) < 1.0) {
+                    reward += (1.0 - Math.abs(error)) * 20;
+                }
+
+                return reward;
+            }
+
+            remember(state, action, reward, nextState, done, waterTemp, targetTemp, nextWaterTemp) {
+                // 存储扩展状态（包含相对温度因子）
+                const experience = [
+                    this.normalizeState(state, waterTemp, targetTemp),
+                    action / this.maxPower,  // 归一化动作（功率系数0~1）
+                    reward,
+                    this.normalizeState(nextState, nextWaterTemp, targetTemp),
+                    done
+                ];
+                this.replayBuffer.add(experience);
+            }
+
+            async replay() {
+                if (this.replayBuffer.size() < this.batchSize) return;
+
+                const { indices, experiences, weights } = this.replayBuffer.sample(this.batchSize);
+                if (experiences.length === 0) return; // 安全检查
+
+                const states = tf.tensor2d(experiences.map(e => e[0]));
+                const actions = tf.tensor2d(experiences.map(e => [e[1]]));
+                const rewards = tf.tensor1d(experiences.map(e => e[2]));
+                const nextStates = tf.tensor2d(experiences.map(e => e[3]));
+                const dones = tf.tensor1d(experiences.map(e => e[4] ? 0 : 1));
+
+                try {
+                    // 训练Critic
+                    const nextActions = this.targetActor.predict(nextStates);
+                    const nextQ = this.targetCritic.predict([nextStates, nextActions]);
+                    const nextQFlat = tf.squeeze(nextQ);
+
+                    const targetQ = tf.add(
+                        rewards,
+                        tf.mul(tf.mul(this.gamma, nextQFlat), dones)
+                    );
+
+                    const targetQExpanded = tf.expandDims(targetQ, 1);
+
+                    // 增加梯度裁剪，提高训练稳定性
+                    const criticHistory = await this.critic.fit(
+                        [states, actions],
+                        targetQExpanded,
+                        {
+                            epochs: 1,
+                            verbose: 0,
+                            batchSize: this.batchSize
+                        }
+                    );
+
+                    this.criticLoss = criticHistory.history.loss[0];
+
+                    // 训练Actor
+                    await this.trainActor(states);
+
+                    // 更新TD误差以更新优先级
+                    const predictedQ = this.critic.predict([states, actions]);
+                    const tdErrors = tf.sub(targetQExpanded, predictedQ).arraySync().map(e => e[0]);
+                    this.replayBuffer.updatePriorities(indices, tdErrors);
+
+                    // 软更新目标网络
+                    this.updateTargetNetworks(this.tau);
+
+                    // 衰减噪声 - 使用余弦衰减曲线
+                    if (this.noiseScale > this.minNoiseScale) {
+                        const cosDecayRate = this.noiseDecay * (1 + Math.cos(Math.PI * this.trainingStability.noImprovementCount / 30) * 0.1);
+                        this.noiseScale = Math.max(
+                            this.minNoiseScale,
+                            this.noiseScale * cosDecayRate
+                        );
+                    }
+
+                    // 清理张量
+                    tf.dispose([states, actions, rewards, nextStates, dones,
+                        nextActions, nextQ, nextQFlat, targetQ, targetQExpanded, predictedQ]);
+
+                    // 周期性地清除一小部分旧经验，保持经验多样性
+                    if (Math.random() < 0.01) { // 1%概率触发
+                        this.replayBuffer.clearOldExperiences(0.05);
+                    }
+
+                } catch (error) {
+                    console.error("训练过程中出错:", error);
+                    // 确保清理张量避免内存泄漏
+                    tf.dispose([states, actions, rewards, nextStates, dones]);
+                }
+            }
+
+            async trainActor(states) {
+                try {
+                    const actorOptimizer = tf.train.adam(this.actorLr);
+                    const loss = actorOptimizer.minimize(() => {
+                        const predictedActions = this.actor.predict(states);
+                        const qValues = this.critic.predict([states, predictedActions]);
+                        return tf.neg(tf.mean(qValues));
+                    }, true); // returnCost = true
+                    if (loss) {
+                        this.actorLoss = (await loss.data())[0];
+                        loss.dispose();
+                    }
+                } catch (error) {
+                    console.error("Actor训练出错:", error);
+                }
+            }
+
+            updateTargetNetworks(tau) {
+                try {
+                    // 软更新Actor目标网络
+                    const actorWeights = this.actor.getWeights();
+                    const targetActorWeights = this.targetActor.getWeights();
+
+                    const newActorWeights = actorWeights.map((weight, i) => {
+                        return tf.add(
+                            tf.mul(weight, tau),
+                            tf.mul(targetActorWeights[i], 1 - tau)
+                        );
+                    });
+
+                    this.targetActor.setWeights(newActorWeights);
+
+                    // 软更新Critic目标网络
+                    const criticWeights = this.critic.getWeights();
+                    const targetCriticWeights = this.targetCritic.getWeights();
+
+                    const newCriticWeights = criticWeights.map((weight, i) => {
+                        return tf.add(
+                            tf.mul(weight, tau),
+                            tf.mul(targetCriticWeights[i], 1 - tau)
+                        );
+                    });
+
+                    this.targetCritic.setWeights(newCriticWeights);
+                } catch (error) {
+                    console.error("更新目标网络出错:", error);
+                }
+            }
+
+            // 增加训练稳定性检查
+            checkTrainingStability(reward) {
+                this.trainingStability.recentRewards.push(reward);
+                if (this.trainingStability.recentRewards.length > 10) {
+                    this.trainingStability.recentRewards.shift();
+                }
+
+                if (reward > this.trainingStability.bestReward) {
+                    this.trainingStability.bestReward = reward;
+                    this.trainingStability.noImprovementCount = 0;
+                    return false;
+                } else {
+                    this.trainingStability.noImprovementCount++;
+
+                    // 长时间没有改进，重置噪声进行更多探索
+                    if (this.trainingStability.noImprovementCount > 20) {
+                        // 不直接设置固定值，而是相对增加，避免过大波动
+                        this.noiseScale = Math.min(1.0, this.noiseScale * 1.5);
+                        // 重置OU噪声状态，引入更多随机性
+                        this.noise.reset();
+                        this.trainingStability.noImprovementCount = 0;
+                        return true; // 表示已重置
+                    }
+                }
+                return false;
+            }
+        }
+
+        /****************************************************************
+         *                     TD3  Agent (双 Critic)                    *
+         ****************************************************************/
+        class TD3Agent extends DDPGAgent {
+            constructor(config) {
+                super(config);
+                // 额外第二套 Critic / targetCritic
+                this.critic2 = this.createCritic([96, 96, 96]);
+                this.targetCritic2 = this.createCritic([96, 96, 96]);
+                this.updateTargetNetworks(1.0);
+                // TD3 特有超参数
+                this.policyDelay = 2;     // 每 2 步更新一次 Actor
+                this.policyNoise = 0.2;   // 目标策略平滑噪声
+                this.policyNoiseClip = 0.5;
+                this.trainStep = 0;
+            }
+
+            /** 复写 replay：使用双 Critic + 延迟 Actor 更新 */
+            async replay() {
+                if (this.replayBuffer.size() < this.batchSize) return;
+
+                const { indices, experiences } = this.replayBuffer.sample(this.batchSize);
+                if (experiences.length === 0) return; // 安全检查
+
+                const states = tf.tensor2d(experiences.map(e => e[0]));
+                const actions = tf.tensor2d(experiences.map(e => [e[1]]));
+                const rewards = tf.tensor1d(experiences.map(e => e[2]));
+                const nextStates = tf.tensor2d(experiences.map(e => e[3]));
+                const dones = tf.tensor1d(experiences.map(e => e[4] ? 0 : 1));
+
+                try {
+                    // 目标动作 + 平滑噪声
+                    let nextActions = this.targetActor.predict(nextStates);
+                    const noise = tf.randomNormal(nextActions.shape, 0, this.policyNoise);
+                    const clippedNoise = tf.clipByValue(noise, -this.policyNoiseClip, this.policyNoiseClip);
+                    nextActions = tf.clipByValue(tf.add(nextActions, clippedNoise), 0, 1);
+
+                    // 两个 Critic 取最小 Q
+                    const nextQ1 = tf.squeeze(this.targetCritic.predict([nextStates, nextActions]));
+                    const nextQ2 = tf.squeeze(this.targetCritic2.predict([nextStates, nextActions]));
+                    const nextQ = tf.minimum(nextQ1, nextQ2);
+
+                    const targetQ = tf.add(rewards, tf.mul(this.gamma, tf.mul(nextQ, dones)));
+                    const targetQExp = tf.expandDims(targetQ, 1);
+
+                    // 更新两个 Critic
+                    const criticLoss1 = await this.critic.fit([states, actions], targetQExp,
+                        { epochs: 1, verbose: 0, batchSize: this.batchSize });
+                    const criticLoss2 = await this.critic2.fit([states, actions], targetQExp,
+                        { epochs: 1, verbose: 0, batchSize: this.batchSize });
+                    this.criticLoss = (criticLoss1.history.loss[0] + criticLoss2.history.loss[0]) / 2;
+
+                    // 每 policyDelay 步更新一次 Actor
+                    if (this.trainStep % this.policyDelay === 0) {
+                        await this.trainActor(states);
+                        // 软更新所有 target 网络
+                        this.updateTargetNetworks(this.tau);
+                        // 另外更新第二套 Critic 目标
+                        const c2W = this.critic2.getWeights(),
+                            tc2W = this.targetCritic2.getWeights(),
+                            newW2 = c2W.map((w, i) => tf.add(tf.mul(w, this.tau), tf.mul(tc2W[i], 1 - this.tau)));
+                        this.targetCritic2.setWeights(newW2);
+                    }
+                    this.trainStep++;
+
+                    // 衰减噪声 - 使用余弦衰减曲线
+                    if (this.noiseScale > this.minNoiseScale) {
+                        const cosDecayRate = this.noiseDecay * (1 + Math.cos(Math.PI * this.trainingStability.noImprovementCount / 30) * 0.1);
+                        this.noiseScale = Math.max(
+                            this.minNoiseScale,
+                            this.noiseScale * cosDecayRate
+                        );
+                    }
+
+                    // 清理张量
+                    tf.dispose([states, actions, rewards, nextStates, dones,
+                        nextActions, nextQ1, nextQ2, nextQ, targetQ, targetQExp]);
+                } catch (error) {
+                    console.error("TD3 训练过程中出错:", error);
+                    // 确保清理张量避免内存泄漏
+                    tf.dispose([states, actions, rewards, nextStates, dones]);
+                }
+            }
+        }
+
+        /****************************************************************
+         *                     SAC  Agent (最大熵)                       *
+         ****************************************************************/
+        class SACAgent extends DDPGAgent {
+            constructor(config) {
+                super(config);
+                // 覆盖 actor 为 Gaussian policy：输出 μ, logσ
+                this.actor = this.createGaussianActor([96, 96, 96]);
+                this.targetActor = this.createGaussianActor([96, 96, 96]);
+                this.updateTargetNetworks(1.0);
+
+                // SAC 特有超参数
+                this.alpha = 0.2;   // 熵温度，可训练也可固定
+                this.targetEntropy = -1; // 经验法：-|A|
+                this.logAlpha = tf.variable(tf.scalar(Math.log(this.alpha)));
+                this.alphaOpt = tf.train.adam(3e-4);
+
+                // 为SAC创建第二个critic
+                this.critic2 = this.createCritic([96, 96, 96]);
+                this.targetCritic2 = this.createCritic([96, 96, 96]);
+            }
+
+            createGaussianActor(layers) {
+                const input = tf.input({ shape: [4] }); // 4维输入，包含相对温度系数
+                let x = input;
+
+                // 添加批量归一化
+                let normalizedInput = tf.layers.batchNormalization().apply(input);
+                x = normalizedInput;
+
+                layers.forEach((units, i) => {
+                    x = tf.layers.dense({
+                        units,
+                        activation: 'relu',
+                        kernelInitializer: 'heNormal'
+                    }).apply(x);
+
+                    if (i < layers.length - 1) {
+                        x = tf.layers.batchNormalization().apply(x);
+                    }
+                });
+
+                const mu = tf.layers.dense({
+                    units: 1,
+                    activation: 'tanh',
+                    kernelInitializer: tf.initializers.glorotNormal()
+                }).apply(x);
+
+                // 对logStd使用tanh激活，限制输出范围
+                const logStd = tf.layers.dense({
+                    units: 1,
+                    activation: 'tanh',
+                    kernelInitializer: tf.initializers.glorotNormal()
+                }).apply(x);
+
+                // 映射tanh输出到合理的logStd范围
+                const scaledLogStd = tf.layers.dense({
+                    units: 1,
+                    activation: 'linear',
+                    kernelInitializer: tf.initializers.constant({ value: 0.5 }),
+                    biasInitializer: tf.initializers.constant({ value: -1.0 })
+                }).apply(logStd); // 将tanh输出映射到[-2, 0]范围
+
+                const model = tf.model({ inputs: input, outputs: [mu, scaledLogStd] });
+                return model;
+            }
+
+            /** 采样动作：re‑parameterization + tanh squash */
+            async selectAction(state, waterTemp, targetTemp, training = true) {
+                try {
+                    const ns = this.normalizeState(state, waterTemp, targetTemp);
+                    const sTen = tf.tensor2d([ns]);
+                    const [mu, logStd] = this.actor.predict(sTen);
+
+                    // 限制logStd范围，避免数值不稳定
+                    const clippedLogStd = tf.clipByValue(logStd, -20, 2);
+                    const std = tf.exp(clippedLogStd);
+
+                    let action;
+                    if (training) {
+                        const eps = tf.randomNormal(std.shape);
+                        action = tf.add(mu, tf.mul(std, eps)); // re‑parameterization
+                    } else {
+                        action = mu; // 测试时直接使用均值
+                    }
+
+                    action = tf.tanh(action);                  // squash to [-1,1]
+                    action = tf.div(tf.add(action, 1), 2);     // -> [0,1]
+
+                    // 确保动作在有效范围内
+                    action = tf.clipByValue(action, 0, 1);
+
+                    const arr = await action.array();
+                    tf.dispose([sTen, mu, logStd, clippedLogStd, std, action]);
+
+                    // 返回缩放后的功率
+                    const powerValue = arr[0][0] * this.maxPower;
+
+                    // 在测试模式下使用精确控制
+                    if (!training && Math.abs(waterTemp - targetTemp) < 1.0) {
+                        return this.preciseControlStrategy(powerValue, waterTemp, targetTemp);
+                    }
+
+                    return powerValue;
+                } catch (error) {
+                    console.error("SAC动作选择出错:", error);
+                    // 出错时返回一个安全的默认值
+                    return this.maxPower * 0.5;
+                }
+            }
+
+            /** 覆写 replay：2 Critic + entropy 目标 */
+            async replay() {
+                if (this.replayBuffer.size() < this.batchSize) return;
+
+                const { experiences } = this.replayBuffer.sample(this.batchSize);
+                if (experiences.length === 0) return; // 安全检查
+
+                const states = tf.tensor2d(experiences.map(e => e[0]));
+                const actions = tf.tensor2d(experiences.map(e => [e[1]]));
+                const rewards = tf.tensor1d(experiences.map(e => e[2]));
+                const nextStates = tf.tensor2d(experiences.map(e => e[3]));
+                const dones = tf.tensor1d(experiences.map(e => e[4] ? 0 : 1));
+
+                try {
+                    // -------- 计算目标 Q --------
+                    const [nextMu, nextLogStd] = this.actor.predict(nextStates);
+                    const clippedLogStd = tf.clipByValue(nextLogStd, -20, 2);
+                    const nextStd = tf.exp(clippedLogStd);
+                    const nextEps = tf.randomNormal(nextStd.shape);
+                    let nextAction = tf.add(nextMu, tf.mul(nextStd, nextEps));
+                    nextAction = tf.tanh(nextAction);
+                    const nextActS = tf.div(tf.add(nextAction, 1), 2); // [0,1]
+
+                    // 计算log概率 - 更稳定的实现
+                    const logProb = tf.sub(
+                        tf.sum(
+                            tf.sub(
+                                tf.sub(
+                                    tf.mul(-0.5, tf.square(nextEps)),
+                                    nextLogStd
+                                ),
+                                tf.scalar(0.5 * Math.log(2 * Math.PI))
+                            ),
+                            1, true
+                        ),
+                        tf.sum(
+                            tf.log(tf.sub(tf.scalar(1.0), tf.square(tf.tanh(nextAction)))).add(tf.scalar(1e-6)),
+                            1, true
+                        )
+                    );
+
+                    const targetQ1 = tf.squeeze(this.targetCritic.predict([nextStates, nextActS]));
+                    const targetQ2 = tf.squeeze(this.targetCritic2.predict([nextStates, nextActS]));
+                    const minTargetQ = tf.minimum(targetQ1, targetQ2);
+
+                    const target = tf.add(rewards,
+                        tf.mul(this.gamma,
+                            tf.mul(dones,
+                                tf.sub(minTargetQ, tf.mul(this.alpha, logProb.squeeze())))));
+
+                    // -------- 更新两 Critic --------
+                    const targetExp = tf.expandDims(target, 1);
+                    const loss1 = await this.critic.fit([states, actions], targetExp,
+                        { epochs: 1, verbose: 0, batchSize: this.batchSize });
+                    const loss2 = await this.critic2.fit([states, actions], targetExp,
+                        { epochs: 1, verbose: 0, batchSize: this.batchSize });
+                    this.criticLoss = (loss1.history.loss[0] + loss2.history.loss[0]) / 2;
+
+                    // -------- 更新 Actor & α --------
+                    const actorOpt = tf.train.adam(this.actorLr);
+                    await actorOpt.minimize(() => {
+                        const [mu, lstd] = this.actor.predict(states);
+                        const cLstd = tf.clipByValue(lstd, -20, 2);
+                        const std = tf.exp(cLstd);
+                        const eps = tf.randomNormal(std.shape);
+                        let act = tf.add(mu, tf.mul(std, eps));
+                        act = tf.tanh(act);
+                        const actS = tf.div(tf.add(act, 1), 2);
+
+                        const logPi = tf.sub(
+                            tf.sum(
+                                tf.sub(
+                                    tf.sub(
+                                        tf.mul(-0.5, tf.square(eps)),
+                                        lstd
+                                    ),
+                                    tf.scalar(0.5 * Math.log(2 * Math.PI))
+                                ),
+                                1, true
+                            ),
+                            tf.sum(
+                                tf.log(tf.sub(tf.scalar(1.0), tf.square(tf.tanh(act)))).add(tf.scalar(1e-6)),
+                                1, true
+                            )
+                        );
+
+                        const q1 = this.critic.predict([states, actS]);
+                        const q2 = this.critic2.predict([states, actS]);
+                        const minQ = tf.minimum(q1, q2);
+
+                        const actorLoss = tf.mean(tf.mul(this.alpha, logPi).sub(minQ));
+                        // α 温度更新
+                        const alphaLoss = tf.mean(
+                            tf.mul(this.logAlpha, tf.neg(logPi).sub(this.targetEntropy)));
+                        this.alphaOpt.minimize(() => alphaLoss, false, [this.logAlpha]);
+                        this.alpha = Math.exp((this.logAlpha.dataSync())[0]);
+
+                        mu.dispose(); lstd.dispose(); cLstd.dispose(); std.dispose(); eps.dispose();
+                        act.dispose(); actS.dispose(); logPi.dispose(); q1.dispose();
+                        q2.dispose(); minQ.dispose(); // keep actorLoss
+
+                        return actorLoss;
+                    }, false /* return cost */);
+
+                    // 软更新目标网络
+                    this.updateTargetNetworks(this.tau);
+                    const c2W = this.critic2.getWeights(), tc2W = this.targetCritic2.getWeights(),
+                        newW2 = c2W.map((w, i) => tf.add(tf.mul(w, this.tau), tf.mul(tc2W[i], 1 - this.tau)));
+                    this.targetCritic2.setWeights(newW2);
+
+                    // 清理张量
+                    tf.dispose([states, actions, rewards, nextStates, dones,
+                        nextMu, nextLogStd, clippedLogStd, nextStd, nextEps, nextAction, nextActS,
+                        logProb, targetQ1, targetQ2, minTargetQ, target, targetExp]);
+                } catch (error) {
+                    console.error("SAC训练过程中出错:", error);
+                    // 确保清理张量避免内存泄漏
+                    tf.dispose([states, actions, rewards, nextStates, dones]);
+                }
+            }
+        }
+
+        // ============= 主控制器 ==================
+        class MLController {
+            constructor() {
+                this.logContainer = document.getElementById('logContainer');
+                this.setupEventListeners();
+                this.setupCharts();
+                this.isTraining = false;
+                this.testSimulating = false;
+                this.ddpgAgent = null;
+
+                // 训练指标记录
+                this.trainingMetrics = {
+                    episodeErrors: [],
+                    episodeRewards: []
+                };
+
+                this.stepSinceLastDraw = 0;
+            }
+
+            setupCharts() {
+                // 检查Chart是否已加载
+                if (typeof Chart === 'undefined') {
+                    console.error('Chart.js not loaded');
+                    return;
+                }
+
+                const ctx = document.getElementById('lossChart').getContext('2d');
+                this.lossChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: '总奖励',
+                            data: [],
+                            borderColor: '#4CAF50',
+                            backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                            tension: 0.1,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: '训练奖励变化'
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: false,
+                                title: { display: true, text: '奖励值' }
+                            },
+                            x: {
+                                title: { display: true, text: '训练轮次' }
+                            }
+                        }
+                    }
+                });
+
+                const tdCtx = document.getElementById('tdLossChart').getContext('2d');
+                this.tdLossChart = new Chart(tdCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: 'Actor损失',
+                            data: [],
+                            borderColor: '#FF5722',
+                            backgroundColor: 'rgba(255, 87, 34, 0.1)',
+                            tension: 0.1,
+                            fill: true
+                        },
+                        {
+                            label: 'Critic损失',
+                            data: [],
+                            borderColor: '#2196F3',
+                            backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                            tension: 0.1,
+                            fill: true
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: 'Actor/Critic损失变化'
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                title: { display: true, text: '损失值' }
+                            },
+                            x: {
+                                title: { display: true, text: '训练轮次' }
+                            }
+                        }
+                    }
+                });
+
+                // 训练后水温曲线
+                const trainCtx = document.getElementById('trainCurveChart').getContext('2d');
+                this.trainCurveChart = new Chart(trainCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [
+                            {
+                                label: '目标温度',          // 数据集 0
+                                data: [],
+                                borderColor: '#FF9800',
+                                backgroundColor: 'rgba(255,152,0,0.1)',
+                                fill: false,
+                                tension: 0.1,
+                                borderWidth: 2,
+                                yAxisID: 'temp'
+                            },
+                            {
+                                label: '水温轨迹',          // 数据集 1
+                                data: [],
+                                borderColor: '#4CAF50',
+                                backgroundColor: 'rgba(76,175,80,0.1)',
+                                fill: false,
+                                tension: 0.1,
+                                borderWidth: 2,
+                                yAxisID: 'temp'
+                            },
+                            {
+                                label: '奖励',              // ⭐ 新增数据集 2
+                                data: [],
+                                borderColor: '#2196F3',
+                                backgroundColor: 'rgba(33,150,243,0.05)',
+                                fill: true,
+                                tension: 0.2,
+                                borderWidth: 1,
+                                yAxisID: 'reward'
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        interaction: { intersect: false, mode: 'index' },
+                        plugins: {
+                            legend: { position: 'top' },
+                            title: { display: true, text: '每轮训练后水温与奖励响应' }
+                        },
+                        scales: {
+                            temp: {                       // 🌡️ 温度主轴（左）
+                                type: 'linear',
+                                position: 'left',
+                                beginAtZero: false,
+                                title: { display: true, text: '温度 (°C)' }
+                            },
+                            reward: {                     // 💰 奖励副轴（右）
+                                type: 'linear',
+                                position: 'right',
+                                beginAtZero: true,
+                                grid: { drawOnChartArea: false },
+                                title: { display: true, text: '奖励' }
+                            },
+                            x: {
+                                title: { display: true, text: '时间步' }
+                            }
+                        }
+                    }
+                });
+                const testCtx = document.getElementById('testCurveChart').getContext('2d');
+                this.testCurveChart = new Chart(testCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [
+                            {
+                                label: '目标温度',
+                                data: [],
+                                borderColor: '#FF9800',
+                                backgroundColor: 'rgba(255, 152, 0, 0.1)',
+                                fill: false,
+                                tension: 0.1,
+                                borderWidth: 2
+                            },
+                            {
+                                label: '实际水温',
+                                data: [],
+                                borderColor: '#2196F3',
+                                backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                                fill: false,
+                                tension: 0.1,
+                                borderWidth: 2
+                            },
+                            {
+                                label: '加热功率',
+                                data: [],
+                                borderColor: '#9C27B0',
+                                backgroundColor: 'rgba(156, 39, 176, 0.1)',
+                                fill: false,
+                                tension: 0.1,
+                                yAxisID: 'power',
+                                borderWidth: 1
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: '实时控温过程'
+                            },
+                            legend: { display: true }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: false,
+                                title: { display: true, text: '温度 (°C)' }
+                            },
+                            power: {
+                                type: 'linear',
+                                position: 'right',
+                                beginAtZero: true,
+                                title: { display: true, text: '功率 (W)' },
+                                grid: { drawOnChartArea: false }
+                            },
+                            x: {
+                                title: { display: true, text: '时间步' }
+                            }
+                        }
+                    }
+                });
+
+                // 新增: 温度误差曲线
+                const errorCtx = document.getElementById('errorChart').getContext('2d');
+                this.errorChart = new Chart(errorCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [
+                            {
+                                label: '平均温度误差',
+                                data: [],
+                                borderColor: '#E91E63',
+                                backgroundColor: 'rgba(233, 30, 99, 0.1)',
+                                fill: true,
+                                tension: 0.1,
+                                borderWidth: 2
+                            },
+                            {
+                                label: '最大温度误差',
+                                data: [],
+                                borderColor: '#FF5722',
+                                backgroundColor: 'rgba(255, 87, 34, 0.1)',
+                                fill: false,
+                                tension: 0.1,
+                                borderWidth: 1,
+                                borderDash: [5, 5]
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            title: {
+                                display: true,
+                                text: '训练过程温度误差变化'
+                            },
+                            legend: { display: true }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                title: { display: true, text: '温度误差 (°C)' }
+                            },
+                            x: {
+                                title: { display: true, text: '训练轮次' }
+                            }
+                        }
+                    }
+                });
+            }
+
+            setupEventListeners() {
+                document.getElementById('startTraining').addEventListener('click',
+                    () => this.startTraining());
+                document.getElementById('stopTraining').addEventListener('click',
+                    () => this.stopTraining());
+                document.getElementById('saveModel').addEventListener('click',
+                    () => this.saveModel());
+                document.getElementById('loadModel').addEventListener('click',
+                    () => this.loadModel());
+                document.getElementById('testModel').addEventListener('click',
+                    () => this.testModel());
+                document.getElementById('stopTest').addEventListener('click',
+                    () => this.stopTestModel());
+            }
+
+            log(message, type = 'info') {
+                const logContainer = this.logContainer;
+                const timestamp = new Date().toLocaleTimeString();
+                let color = '#666';
+
+                if (type === 'success') color = '#4CAF50';
+                if (type === 'warning') color = '#FF9800';
+                if (type === 'error') color = '#F44336';
+
+                logContainer.innerHTML += `<span style="color: ${color};">[${timestamp}]</span> ${message}<br>`;
+                logContainer.scrollTop = logContainer.scrollHeight;
+            }
+
+            updateStatus(message) {
+                document.getElementById('status').textContent = message;
+            }
+
+            updateProgressBar(current, total) {
+                const progressBar = document.getElementById('progressBar');
+                const progressText = document.getElementById('progressText');
+                const percent = Math.round((current / total) * 100);
+
+                progressBar.style.width = `${percent}%`;
+                progressText.textContent = `${percent}% (${current}/${total})`;
+                document.getElementById('trainingProgress').style.display = 'block';
+            }
+
+            updateTrainingMetrics(episode, totalEpisodes, reward, noise, tempErrors) {
+                document.getElementById('currentEpisode').textContent = `${episode}/${totalEpisodes}`;
+                document.getElementById('currentNoise').textContent = `${(noise * 100).toFixed(1)}%`;
+
+                // 计算平均奖励
+                const avgReward = this.trainingMetrics.episodeRewards
+                    .slice(-10)
+                    .reduce((sum, val) => sum + val, 0) /
+                    Math.min(10, this.trainingMetrics.episodeRewards.length);
+                document.getElementById('avgReward').textContent = avgReward.toFixed(1);
+
+                // 计算平均误差
+                let avgError = 0;
+                if (tempErrors && tempErrors.length > 0) {
+                    avgError = tempErrors.reduce((sum, val) => sum + val, 0) / tempErrors.length;
+                }
+                document.getElementById('avgError').textContent = avgError.toFixed(2);
+            }
+
+            updateMetrics(temp, error, power, reward) {
+                document.getElementById('currentTemp').textContent = temp.toFixed(1);
+                document.getElementById('currentError').textContent = error.toFixed(2);
+                document.getElementById('currentPower').textContent = power.toFixed(0);
+                document.getElementById('currentReward').textContent = reward.toFixed(1);
+                document.getElementById('metricsPanel').style.display = 'block';
+            }
+
+            /**  训练后快速模拟一次升温曲线，用于可视化改进效果  */
+            async evaluateTrainingCurve(agent, config, targetTemp, maxSimSteps = 600) {
+                // targetTemp 必须由调用方传入（每轮不同），不可再用 config.targetTemp
+                let waterTemp = config.initTemp;
+                let lastWaterTemp = waterTemp;
+                let dTdt = 0;
+                let lastPower = 0;
+                const rewardTrace = [];
+                const tempTrace = [];
+                const tempErrors = [];
+                // 目标温度曲线全程用传入的 targetTemp
+                const setTrace = Array(maxSimSteps).fill(targetTemp);
+
+                for (let step = 0; step < maxSimSteps; step++) {
+                    // 核心3量 + 水温和目标温度
+                    const state = [
+                        waterTemp - targetTemp,
+                        lastWaterTemp,
+                        lastPower / agent.maxPower
+                    ];
+
+                    const power = await agent.selectAction(state, waterTemp, targetTemp, false);
+
+                    // 环境模型
+                    const deltaT = (power - config.hA * (waterTemp - config.roomTemp)) /
+                        (config.waterMass * 4184);
+                    const nextTemp = waterTemp + deltaT;
+                    dTdt = (nextTemp - waterTemp) / config.deltaT;
+                    lastWaterTemp = waterTemp;
+                    waterTemp = nextTemp;
+                    lastPower = power;
+                    tempTrace.push(waterTemp);
+
+                    // 计算温度误差
+                    const error = Math.abs(waterTemp - targetTemp);
+                    tempErrors.push(error);
+
+                    const reward = agent.calculateReward(waterTemp, targetTemp, power, lastWaterTemp, step);
+                    rewardTrace.push(reward);
+
+                    if (error < 0.1 && step > 200) break;
+                }
+
+                if (this.trainCurveChart) {
+                    this.trainCurveChart.data.labels = tempTrace.map((_, i) => i);
+                    // 目标温度轨迹必须全程用传入的 targetTemp
+                    this.trainCurveChart.data.datasets[0].data = setTrace.slice(0, tempTrace.length);
+                    this.trainCurveChart.data.datasets[1].data = tempTrace;
+                    this.trainCurveChart.data.datasets[2].data = rewardTrace;
+                    
+                    const CHART_UPDATE_INTERVAL = 1000;  // 每 20 步才 redraw
+
+                    this.stepSinceLastDraw++;
+                    if (this.stepSinceLastDraw >= CHART_UPDATE_INTERVAL || step === episodeEnd) {
+                        this.stepSinceLastDraw = 0;
+                        this.trainCurveChart.update('none');
+                        
+                    }
+
+                }
+
+                return {
+                    avgError: tempErrors.reduce((sum, val) => sum + val, 0) / tempErrors.length,
+                    maxError: Math.max(...tempErrors),
+                    finalError: tempErrors[tempErrors.length - 1],
+                    stepCount: tempTrace.length
+                };
+            }
+
+            async startTraining() {
+                const algorithm = document.getElementById('algorithmSelect').value;
+                if (this.isTraining) return;
+
+                this.isTraining = true;
+                this.updateStatus(`🚀 ${algorithm.toUpperCase()} 强化学习训练中...`);
+
+                // 重置训练指标
+                this.trainingMetrics = {
+                    episodeErrors: [],
+                    episodeRewards: []
+                };
+
+                if (this.lossChart) {
+                    this.lossChart.data.labels = [];
+                    this.lossChart.data.datasets[0].data = [];
+                    this.lossChart.update();
+                }
+
+                if (this.tdLossChart) {
+                    this.tdLossChart.data.labels = [];
+                    this.tdLossChart.data.datasets[0].data = [];
+                    this.tdLossChart.data.datasets[1].data = [];
+                    this.tdLossChart.update();
+                }
+
+                if (this.errorChart) {
+                    this.errorChart.data.labels = [];
+                    this.errorChart.data.datasets[0].data = [];
+                    this.errorChart.data.datasets[1].data = [];
+                    this.errorChart.update();
+                }
+
+                const config = {
+                    maxPower: parseFloat(document.getElementById('maxPowerInput').value),
+                    targetTemp: parseFloat(document.getElementById('targetWaterTemp').value),   // 仅测试阶段使用
+                    initTemp: parseFloat(document.getElementById('initWaterTemp').value),
+                    roomTemp: parseFloat(document.getElementById('roomTempInput').value),
+                    hA: parseFloat(document.getElementById('hAInput').value),
+                    waterMass: parseFloat(document.getElementById('waterMassInput').value),
+                    deltaT: parseFloat(document.getElementById('deltaT').value)
+                };
+
+                const rewardTrace = [];
+
+                this.stepSinceLastDraw = 0;
+
+                // 禁止训练期间使用固定 targetTemp
+                config.targetTemp = null;
+
+                // 动态计算合理的目标温度范围，基于环境温度和最大功率
+                const minTemp = Math.max(25, config.roomTemp + 5); // 至少高于室温5度
+                const maxTemp = Math.min(95, config.roomTemp + config.maxPower / 40); // 基于最大功率的可达温度
+                config.targetMin = minTemp;
+                config.targetMax = maxTemp;
+
+                this.log(`🎯 开始 ${algorithm.toUpperCase()} 智能控温训练...`);
+                this.log(`📊 训练目标温区动态调整为: ${minTemp.toFixed(1)}‑${maxTemp.toFixed(1)}°C，基于室温${config.roomTemp}°C`);
+
+                let episodeTarget = null;
+                try {
+                    if (algorithm === 'td3') {
+                        this.ddpgAgent = new TD3Agent(config);
+                    } else if (algorithm === 'sac') {
+                        this.ddpgAgent = new SACAgent(config);
+                    } else {
+                        this.ddpgAgent = new DDPGAgent(config);
+                    }
+
+                    const nEpisodes = parseInt(document.getElementById('epochs').value) || 200;
+                    // === 固定回合步数，专注先把训练跑通 ===
+                    const maxSteps = 2000;                // 每回合 2000 步
+                    console.log(`💡 Episode duration fixed at ${maxSteps} steps`);
+                    const tolerance = 0.05;          // 目标稳态精度 ±0.05 °C
+
+                    let bestReward = -Infinity;
+                    let bestActorWeights = null;
+                    let bestCriticWeights = null;
+                    let recentRewards = [];
+
+                    let lastPower = 0;
+                    // === 双阶段: 升温 + 稳态考察 ===
+                    const steadyNeeded = 500;         // 稳态需持续步数
+
+                    for (let episode = 0; episode < nEpisodes; episode++) {
+                        if (!this.isTraining) {
+                            this.updateStatus('❌ 训练已停止');
+                            this.log('⏹️ 训练被用户中止');
+                            return;
+                        }
+
+                        // 更新训练进度条
+                        this.updateProgressBar(episode + 1, nEpisodes);
+
+                        // 实现课程学习 - 循序渐进提高难度
+                        let episodeTargetRange;
+                        if (episode < nEpisodes * 0.3) {
+                            // 前30%轮次：在较窄范围内训练
+                            const targetMid = (config.targetMin + config.targetMax) / 2;
+                            const narrowRange = (config.targetMax - config.targetMin) * 0.3;
+                            episodeTarget = targetMid - narrowRange / 2 + Math.random() * narrowRange;
+                        } else {
+                            // 后续逐步扩大范围
+                            const progress = Math.min(1.0, (episode - nEpisodes * 0.3) / (nEpisodes * 0.7));
+                            const range = (config.targetMax - config.targetMin) * (0.3 + 0.7 * progress);
+                            const targetMid = (config.targetMin + config.targetMax) / 2;
+                            episodeTarget = targetMid - range / 2 + Math.random() * range;
+                        }
+
+                        // 动态调整初始水温 - 靠近但低于目标温度
+                        let waterTemp = config.roomTemp + (episodeTarget - config.roomTemp) * (0.3 + 0.5 * Math.random());
+
+                        let dTdt = 0;
+                        let lastWaterTemp = waterTemp;
+                        let state = [waterTemp - episodeTarget, lastWaterTemp, 0];
+                        let totalReward = 0;
+
+                        // 若本回合未能进入容差区间，则保持 null ➜ 日志显示"未达"
+                        let stepsToTarget = null;
+                        let warmUpDone = false;
+                        let steadySteps = 0;
+
+                        let stableCount = 0;
+                        // 收集温度误差
+                        const tempErrors = [];
+
+                        for (let step = 0; step < maxSteps; step++) {
+                            if (!this.isTraining) break;
+
+                            // 更新后的 selectAction 传入当前水温和目标温度
+                            const heatingPower = await this.ddpgAgent.selectAction(state, waterTemp, episodeTarget, true);
+                            const deltaT = (heatingPower - config.hA * (waterTemp - config.roomTemp)) / (config.waterMass * 4184);
+                            const nextWaterTemp = waterTemp + deltaT;
+                            const nextDTdt = (nextWaterTemp - waterTemp) / config.deltaT;
+                            const nextState = [
+                                nextWaterTemp - episodeTarget,
+                                waterTemp,
+                                heatingPower / this.ddpgAgent.maxPower
+                            ];
+
+                            // 改进的奖励函数 - 接收水温和目标温度
+                            const reward = this.ddpgAgent.calculateReward(nextWaterTemp, episodeTarget, heatingPower, lastWaterTemp, step);
+                            rewardTrace.push(reward);
+                            this.log(`📈 [第${episode + 1}轮, 第${step + 1}步] 奖励: ${reward.toFixed(2)}`);
+
+                            if (this.trainCurveChart.data.datasets.length < 3) {
+                                this.trainCurveChart.data.datasets.push({
+                                    label: '每步奖励',
+                                    data: rewardTrace,
+                                    borderColor: '#E91E63',
+                                    backgroundColor: 'rgba(233, 30, 99, 0.1)',
+                                    fill: false,
+                                    tension: 0.1,
+                                    yAxisID: 'reward',
+                                    borderWidth: 1,
+                                    pointRadius: 0
+                                });
+                            } else {
+                                this.trainCurveChart.data.datasets[2].data = rewardTrace;
+                            }
+                            if (!this.trainCurveChart.options.scales.reward) {
+                                this.trainCurveChart.options.scales.reward = {
+                                    type: 'linear',
+                                    position: 'right',
+                                    title: { display: true, text: '奖励值' },
+                                    beginAtZero: false,
+                                    grid: { drawOnChartArea: false }
+                                };
+                            }
+                            this.trainCurveChart.update('none');
+
+                            // 改进的记忆函数，传入更多温度信息
+                            this.ddpgAgent.remember(state, heatingPower, reward, nextState, false, waterTemp, episodeTarget, nextWaterTemp);
+
+                            lastPower = heatingPower;
+                            state = nextState;
+                            lastWaterTemp = waterTemp;
+                            waterTemp = nextWaterTemp;
+                            totalReward += reward;
+
+                            // 收集误差数据
+                            const tempError = Math.abs(waterTemp - episodeTarget);
+                            tempErrors.push(tempError);
+
+                            const inTol = tempError < tolerance;
+
+                            if (inTol && !warmUpDone) {
+                                warmUpDone = true;
+                                stepsToTarget = step;
+                            }
+
+                            if (warmUpDone) {
+                                const tempSlope = Math.abs(nextDTdt);
+                                if (tempSlope < 0.02) {
+                                    steadySteps++;
+                                } else {
+                                    steadySteps = 0;
+                                }
+
+                                if (steadySteps >= steadyNeeded) {
+                                    break;
+                                }
+                            }
+                            if (Math.abs(waterTemp - episodeTarget) < 0.3) {
+                                stableCount++;
+                            } else {
+                                stableCount = 0;
+                            }
+                            // 新的提前终止逻辑：进入目标区间后考察一定稳定时间
+                            if (stableCount > 0 && stableCount % 50 === 0) {
+                                const avgError = Math.abs(waterTemp - episodeTarget);
+                                if (avgError < 0.2) {
+                                    this.log(`🎯 第${episode + 1}轮: 控温已稳定在目标误差范围内，提前结束`);
+                                    break;
+                                }
+                            }
+                        }
+
+                        // 每回合结束后增加更多的回放训练
+                        const replayCount = Math.min(10, Math.floor(episode / 20) + 1);
+                        for (let i = 0; i < replayCount; i++) {
+                            await this.ddpgAgent.replay();
+                        }
+
+                        // 保存训练指标
+                        this.trainingMetrics.episodeRewards.push(totalReward);
+                        if (tempErrors.length > 0) {
+                            const avgError = tempErrors.reduce((sum, val) => sum + val, 0) / tempErrors.length;
+                            const maxError = Math.max(...tempErrors);
+                            this.trainingMetrics.episodeErrors.push({ avg: avgError, max: maxError });
+
+                            // 更新误差曲线
+                            if (this.errorChart) {
+                                this.errorChart.data.labels.push(episode + 1);
+                                this.errorChart.data.datasets[0].data.push(avgError);
+                                this.errorChart.data.datasets[1].data.push(maxError);
+                                this.errorChart.update('none');
+                            }
+                        }
+
+                        // 更新训练指标面板
+                        this.updateTrainingMetrics(
+                            episode + 1, nEpisodes,
+                            totalReward,
+                            this.ddpgAgent.noiseScale,
+                            tempErrors
+                        );
+
+                        recentRewards.push(totalReward);
+                        if (recentRewards.length > 10) recentRewards.shift();
+
+                        if (this.lossChart) {
+                            this.lossChart.data.labels.push(episode + 1);
+                            this.lossChart.data.datasets[0].data.push(totalReward);
+                            this.lossChart.update('none');
+                        }
+
+                        if (this.tdLossChart) {
+                            this.tdLossChart.data.labels.push(episode + 1);
+                            this.tdLossChart.data.datasets[0].data.push(Math.abs(this.ddpgAgent.actorLoss || 0));
+                            this.tdLossChart.data.datasets[1].data.push(this.ddpgAgent.criticLoss || 0);
+                            this.tdLossChart.update('none');
+                        }
+
+                        // 检查训练稳定性并可能重置探索
+                        const resetExploration = this.ddpgAgent.checkTrainingStability(totalReward);
+                        if (resetExploration) {
+                            this.log(`🔄 第${episode + 1}轮: 重置探索策略，增大噪声至 ${(this.ddpgAgent.noiseScale * 100).toFixed(1)}%`, 'warning');
+                        }
+
+                        if (totalReward > bestReward) {
+                            bestReward = totalReward;
+                            // 1️⃣ 先释放旧快照
+                            if (bestActorWeights) bestActorWeights.forEach(t => t.dispose());
+                            if (bestCriticWeights) bestCriticWeights.forEach(t => t.dispose());
+
+                            // 2️⃣ clone 深拷贝，锁定快照
+                            bestActorWeights = this.ddpgAgent.actor.getWeights().map(t => t.clone());
+                            bestCriticWeights = this.ddpgAgent.critic.getWeights().map(t => t.clone());
+
+                            this.log(`🏆 第${episode + 1}轮: 发现最佳模型! 奖励: ${bestReward.toFixed(1)}`, 'success');
+                        }
+
+                        const avgReward = recentRewards.reduce((a, b) => a + b, 0) / recentRewards.length;
+                        this.updateStatus(
+                            `🔥 训练中: ${episode + 1}/${nEpisodes} | ` +
+                            `目标:${episodeTarget.toFixed(1)}°C | ` +
+                            `噪声: ${(this.ddpgAgent.noiseScale * 100).toFixed(1)}% | ` +
+                            `奖励: ${totalReward.toFixed(1)} | ` +
+                            `平均: ${avgReward.toFixed(1)}`
+                        );
+
+                        if (episode % 5 === 0 || episode === nEpisodes - 1) {
+                            // 计算温度误差指标
+                            const avgError = tempErrors.reduce((a, b) => a + b, 0) / tempErrors.length;
+                            const maxError = Math.max(...tempErrors);
+
+                            this.log(
+                                `📈 第${episode + 1}轮: 奖励=${totalReward.toFixed(1)}, ` +
+                                `目标温度=${episodeTarget.toFixed(1)}°C, ` +
+                                `噪声=${(this.ddpgAgent.noiseScale * 100).toFixed(1)}%, ` +
+                                `平均误差=${avgError.toFixed(2)}°C, ` +
+                                `到达目标用时=${stepsToTarget !== null ? stepsToTarget : '未达'}步`
+                            );
+                        }
+
+                        // 每 5 轮或最后一轮，快速评估一次升温曲线
+                        if (episode % 5 === 0 || episode === nEpisodes - 1) {
+                            // 必须用本轮的 episodeTarget 传入 evaluateTrainingCurve
+                            const evalResults = await this.evaluateTrainingCurve(this.ddpgAgent, config, episodeTarget, 600);
+
+                            // 如果是最后一轮，显示详细的评估结果
+                            if (episode === nEpisodes - 1) {
+                                this.log(
+                                    `📊 最终模型评估: ` +
+                                    `平均温度误差=${evalResults.avgError.toFixed(2)}°C, ` +
+                                    `最大误差=${evalResults.maxError.toFixed(2)}°C, ` +
+                                    `最终误差=${evalResults.finalError.toFixed(2)}°C, ` +
+                                    `用时=${evalResults.stepCount}步`,
+                                    'success'
+                                );
+                            }
+                        }
+
+                        await tf.nextFrame();
+                    }
+
+                    if (bestActorWeights && bestCriticWeights) {
+                        await this.ddpgAgent.actor.setWeights(bestActorWeights);
+                        await this.ddpgAgent.critic.setWeights(bestCriticWeights);
+                        this.log(`🏆 已加载最佳模型 (奖励: ${bestReward.toFixed(1)})`, 'success');
+                    }
+
+                    this.updateStatus(`✅ ${algorithm.toUpperCase()} 训练完成！可以开始测试控温效果`);
+                    this.log('🎉 训练完成！智能体已准备就绪，可进行控温测试', 'success');
+
+                    /* === 训练结束: 恢复历史最佳快照 === */
+                    if (bestActorWeights) {
+                        const actorSnap = bestActorWeights.map(t => t.clone());   // clone 防止修改备份
+                        this.ddpgAgent.actor.setWeights(actorSnap);
+                        this.ddpgAgent.targetActor.setWeights(actorSnap);
+                    }
+                    if (bestCriticWeights) {
+                        const criticSnap = bestCriticWeights.map(t => t.clone());
+                        this.ddpgAgent.critic.setWeights(criticSnap);
+                        this.ddpgAgent.targetCritic.setWeights(criticSnap);
+                    }
+                    // 训练完成后评估一次升温曲线（用接近中间值的目标温度）
+                    const finalTarget = (config.targetMin + config.targetMax) / 2;
+                    await this.evaluateTrainingCurve(this.ddpgAgent, config, finalTarget, 600);
+
+                } catch (error) {
+                    this.updateStatus('❌ 训练出错: ' + error.message);
+                    this.log('💥 训练错误: ' + error.message, 'error');
+                    console.error('Training error:', error);
+                } finally {
+                    this.isTraining = false;
+                }
+            }
+
+            stopTraining() {
+                this.isTraining = false;
+                this.updateStatus('⏹️ 正在停止训练...');
+            }
+
+            async testModel() {
+                if (!this.ddpgAgent) {
+                    this.log('❌ 没有可用的训练模型，请先进行训练', 'error');
+                    return;
+                }
+
+                if (this.testSimulating) {
+                    this.log('⚠️ 控温测试已在运行中', 'warning');
+                    return;
+                }
+
+                this.testSimulating = true;
+                document.getElementById('stopTest').style.display = 'inline-block';
+                this.updateStatus('🧪 智能控温测试中...');
+                this.log('🚀 开始智能控温测试...');
+
+                // === 增加稳态考察变量 ===
+                let inTargetZone = false;
+                let stableCount = 0;
+                const stabilizationSteps = 500; // 稳态考察步数
+
+                try {
+                    const config = {
+                        targetTemp: parseFloat(document.getElementById('targetWaterTemp').value),
+                        initTemp: parseFloat(document.getElementById('initWaterTemp').value),
+                        roomTemp: parseFloat(document.getElementById('roomTempInput').value),
+                        hA: parseFloat(document.getElementById('hAInput').value),
+                        waterMass: parseFloat(document.getElementById('waterMassInput').value),
+                        deltaT: parseFloat(document.getElementById('deltaT').value)
+                    };
+
+                    let lastPower = 0;
+                    let waterTemp = config.initTemp;
+                    let lastWaterTemp = waterTemp;
+                    let dTdt = 0;
+                    let step = 0;
+                    const tempTrace = [];
+                    const powerTrace = [];
+                    const setTrace = [];
+                    const tolerance = 0.05;
+
+                    let state = [
+                        waterTemp - config.targetTemp,
+                        dTdt,
+                        lastPower / this.ddpgAgent.maxPower
+                    ];
+
+
+                    const tempErrors = [];
+
+                    while (this.testSimulating && step < 1000) {
+                        // 传入当前水温和目标温度，使用相对温度因子
+                        const heatingPower = await this.ddpgAgent.selectAction(state, waterTemp, config.targetTemp, false);
+                        const deltaT = (heatingPower - config.hA * (waterTemp - config.roomTemp)) / (config.waterMass * 4184);
+                        const nextWaterTemp = waterTemp + deltaT;
+                        const nextDTdt = (nextWaterTemp - waterTemp) / config.deltaT;
+
+                        tempTrace.push(nextWaterTemp);
+                        powerTrace.push(heatingPower);
+                        setTrace.push(config.targetTemp);
+
+                        // 收集误差数据
+                        const tempError = Math.abs(nextWaterTemp - config.targetTemp);
+                        tempErrors.push(tempError);
+
+                        if (this.testCurveChart) {
+                            this.testCurveChart.data.labels = tempTrace.map((_, i) => i);
+                            this.testCurveChart.data.datasets[0].data = setTrace;
+                            this.testCurveChart.data.datasets[1].data = tempTrace;
+                            this.testCurveChart.data.datasets[2].data = powerTrace;
+                            this.testCurveChart.update('none');
+                        }
+
+                        state = [
+                            nextWaterTemp - config.targetTemp,
+                            nextDTdt,
+                            heatingPower / this.ddpgAgent.maxPower
+                        ];
+
+                        const reward = this.ddpgAgent.calculateReward(nextWaterTemp, config.targetTemp, heatingPower, lastWaterTemp, step);
+                        lastPower = heatingPower;
+                        lastWaterTemp = waterTemp;
+                        waterTemp = nextWaterTemp;
+
+                        this.updateMetrics(waterTemp, tempError, heatingPower, reward);
+                        this.updateStatus(
+                            `🌡️ 控温中: 当前${waterTemp.toFixed(1)}°C | ` +
+                            `目标${config.targetTemp}°C | ` +
+                            `误差${tempError.toFixed(2)}°C | ` +
+                            `功率${heatingPower.toFixed(0)}W`
+                        );
+
+                        if (Math.abs(waterTemp) > 200) {
+                            this.log('⚠️ 检测到温度异常，重置环境', 'warning');
+                            waterTemp = config.initTemp;
+                            lastWaterTemp = waterTemp;
+                            dTdt = 0;
+                            lastPower = 0;
+                            state = [
+                                waterTemp - config.targetTemp,
+                                dTdt,
+                                lastPower / this.ddpgAgent.maxPower
+                            ];
+                        }
+
+                        step++;
+
+                        // 新的提前终止逻辑：进入目标区间后考察stabilizationSteps步
+                        if (!inTargetZone && tempError < tolerance) {
+                            inTargetZone = true;
+                            stableCount = 0;
+                            this.log('🌈 已进入目标区间，开始稳态性能考察...', 'success');
+                        }
+
+                        if (inTargetZone) {
+                            stableCount++;
+                            if (stableCount >= stabilizationSteps) {
+                                this.log(`🎯 稳态考察完成，总步数：${step}, 测试终止`, 'success');
+
+                                // 计算稳态阶段的性能指标
+                                const stableErrors = tempErrors.slice(-stabilizationSteps);
+                                const avgStableError = stableErrors.reduce((sum, val) => sum + val, 0) / stableErrors.length;
+                                const maxStableError = Math.max(...stableErrors);
+
+                                this.log(
+                                    `📊 稳态控制性能: ` +
+                                    `平均误差=${avgStableError.toFixed(3)}°C, ` +
+                                    `最大误差=${maxStableError.toFixed(3)}°C`,
+                                    'success'
+                                );
+
+                                break;
+                            }
+                        }
+
+                        const simSpeed = parseFloat(document.getElementById('simSpeed').value);
+                        if (simSpeed > 0) {
+                            await new Promise(resolve => setTimeout(resolve, simSpeed * 1000));
+                        } else {
+                            await tf.nextFrame();
+                        }
+                    }
+
+                } catch (error) {
+                    this.updateStatus('❌ 测试出错: ' + error.message);
+                    this.log('💥 测试错误: ' + error.message, 'error');
+                    console.error('Test error:', error);
+                } finally {
+                    this.testSimulating = false;
+                    document.getElementById('stopTest').style.display = 'none';
+                    this.updateStatus('⏹️ 控温测试已停止');
+                    this.log('🏁 控温测试结束');
+                }
+            }
+
+            stopTestModel() {
+                this.testSimulating = false;
+                document.getElementById('stopTest').style.display = 'none';
+                this.updateStatus('⏹️ 正在停止测试...');
+            }
+
+            async saveModel() {
+                if (!this.ddpgAgent?.actor || !this.ddpgAgent?.critic) {
+                    this.log('❌ 没有可保存的模型', 'error');
+                    return;
+                }
+
+                try {
+                    await this.ddpgAgent.actor.save('downloads://ddpg-actor-model');
+                    await this.ddpgAgent.critic.save('downloads://ddpg-critic-model');
+                    this.log('💾 Actor和Critic模型保存成功', 'success');
+                    this.updateStatus('✅ 模型已保存到下载文件夹');
+                } catch (error) {
+                    this.log('❌ 模型保存失败: ' + error.message, 'error');
+                    this.updateStatus('❌ 保存失败');
+                }
+            }
+
+            async loadModel() {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = '.json';
+                input.multiple = true;
+
+                input.onchange = async (event) => {
+                    try {
+                        const files = Array.from(event.target.files);
+
+                        // 需要加载Actor和Critic两个模型
+                        this.log('📁 请选择Actor模型文件...');
+                        const actorModel = await tf.loadLayersModel(tf.io.browserFiles(files));
+
+                        this.log('📁 请再次选择Critic模型文件...');
+                        const input2 = document.createElement('input');
+                        input2.type = 'file';
+                        input2.accept = '.json';
+                        input2.multiple = true;
+
+                        input2.onchange = async (event2) => {
+                            try {
+                                const files2 = Array.from(event2.target.files);
+                                const criticModel = await tf.loadLayersModel(tf.io.browserFiles(files2));
+
+                                const config = {
+                                    maxPower: parseFloat(document.getElementById('maxPowerInput').value),
+                                    targetTemp: parseFloat(document.getElementById('targetWaterTemp').value),
+                                    initTemp: parseFloat(document.getElementById('initWaterTemp').value),
+                                    roomTemp: parseFloat(document.getElementById('roomTempInput').value),
+                                    hA: parseFloat(document.getElementById('hAInput').value),
+                                    waterMass: parseFloat(document.getElementById('waterMassInput').value)
+                                };
+
+                                this.ddpgAgent = new DDPGAgent(config);
+                                this.ddpgAgent.actor = actorModel;
+                                this.ddpgAgent.critic = criticModel;
+                                this.ddpgAgent.updateTargetNetworks(1.0);
+
+                                this.log('📁 Actor和Critic模型加载成功', 'success');
+                                this.updateStatus('✅ 模型已加载，可以开始测试');
+
+                                // 加载模型后进行一次评估
+                                const evalTarget = config.targetTemp;
+                                await this.evaluateTrainingCurve(this.ddpgAgent, config, evalTarget, 600);
+
+                            } catch (innerError) {
+                                this.log('❌ Critic模型加载失败: ' + innerError.message, 'error');
+                            }
+                        };
+
+                        input2.click();
+
+                    } catch (error) {
+                        this.log('❌ Actor模型加载失败: ' + error.message, 'error');
+                        this.updateStatus('❌ 加载失败');
+                    }
+                };
+
+                input.click();
+            }
+        }
+    </script>
+</body>
+
+</html>
